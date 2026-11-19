@@ -1,0 +1,17 @@
+{
+  // 프로젝트 가상환경을 기본 인터프리터로 사용
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+
+  // 테스트 탐색기 (왼쪽 비커 아이콘)
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"],
+
+  // 한글 출력 깨짐 방지
+  "terminal.integrated.env.windows": { "PYTHONIOENCODING": "utf-8" },
+
+  // 이미지 수만 장이 든 데이터 폴더는 검색·감시에서 제외 (VS Code가 느려지지 않도록)
+  "files.watcherExclude": { "**/data/**": true, "**/outputs/**": true, "**/.venv/**": true },
+  "search.exclude": { "**/data": true, "**/outputs": true, "**/.venv": true }
+}

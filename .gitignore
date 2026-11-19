@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# 모델 가중치 (ultralytics가 자동 다운로드)
+*.pt
+
+# 데이터·결과물 (용량이 크고 개인정보가 포함될 수 있음)
+data/videos/*
+!data/videos/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# AI Hub 원본 데이터셋 (대용량)
+data/094/

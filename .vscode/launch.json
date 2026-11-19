@@ -1,0 +1,86 @@
+{
+  // 실행 및 디버그(Ctrl+Shift+D)에서 항목을 고르고 F5로 실행한다.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "검출 평가: 모델·입력 크기 비교 (AI Hub)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "eval.det_eval",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "args": [
+        "--images", "data/094/01.데이터/2.Validation/원천데이터/VS_4.바운딩박스",
+        "--labels", "data/094/01.데이터/2.Validation/라벨링데이터/VL_4.바운딩박스",
+        "--models", "yolov8n.pt", "yolov8s.pt",
+        "--imgsz", "640", "1280",
+        "--per-group", "60"
+      ]
+    },
+    {
+      "name": "검출 평가: 야간 + CLAHE",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "eval.det_eval",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "args": [
+        "--images", "data/094/01.데이터/2.Validation/원천데이터/VS_4.바운딩박스",
+        "--labels", "data/094/01.데이터/2.Validation/라벨링데이터/VL_4.바운딩박스",
+        "--models", "yolov8s.pt",
+        "--imgsz", "640",
+        "--only", "night", "--per-group", "250", "--clahe",
+        "--out", "outputs/det_eval_night_clahe"
+      ]
+    },
+    {
+      "name": "파이프라인: AI Hub 이미지 폴더 (화면 표시)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.main",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "args": [
+        "--source", "data/094/01.데이터/2.Validation/원천데이터/VS_3.도로차량/94022/task94022_206",
+        "--roi", "configs/roi/example.json",
+        "--fps", "2", "--show"
+      ]
+    },
+    {
+      "name": "파이프라인: 영상 파일 (경로 입력)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.main",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "args": ["--source", "${input:videoPath}", "--roi", "${input:roiPath}", "--show"]
+    },
+    {
+      "name": "ROI 도구 (영상 또는 이미지 폴더)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.roi_tool",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "args": ["--source", "${input:videoPath}", "--out", "${input:roiPath}"]
+    },
+    {
+      "name": "현재 열린 파이썬 파일 실행",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    { "id": "videoPath", "type": "promptString", "description": "영상 파일 또는 이미지 폴더 경로", "default": "data/videos/day01.mp4" },
+    { "id": "roiPath", "type": "promptString", "description": "ROI JSON 경로", "default": "configs/roi/example.json" }
+  ]
+}

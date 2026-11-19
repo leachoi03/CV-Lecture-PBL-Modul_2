@@ -1,0 +1,34 @@
+# 실행 기본 설정. 실험할 때는 이 파일을 복사해서 값만 바꿔 쓰고, 보고서에 사용한 설정 파일을 기록한다.
+
+model: yolov8s.pt          # yolov8n.pt / yolov8s.pt / yolov8m.pt ... (처음 실행 시 자동 다운로드)
+tracker: bytetrack.yaml    # bytetrack.yaml 또는 botsort.yaml (ultralytics 내장)
+conf: 0.25                 # 검출 신뢰도 임계값
+iou: 0.5                   # NMS IoU 임계값
+imgsz: 640                 # 추론 입력 크기
+device: null               # null=자동, 0=GPU0, cpu
+
+# COCO 클래스 ID → 카테고리
+categories:
+  vehicle: [2, 5, 7]       # car, bus, truck
+  two_wheeler: [1, 3]      # bicycle, motorcycle
+  person: [0]
+
+preprocess:
+  clahe: false             # 야간 영상 대비 향상 (LAB 공간 L 채널 CLAHE)
+  clahe_clip: 2.0
+
+trajectory:
+  maxlen: 40               # ID별로 저장할 최근 지면 접점 개수
+  max_age: 60              # 이 프레임 수 동안 안 보이면 궤적 삭제
+
+stopline:
+  confirm_frames: 3        # 정지선을 넘은 뒤 연속으로 넘어가 있어야 하는 프레임 수
+
+jaywalk:
+  min_seconds: 1.0         # 횡단보도 밖 차도에 이 시간 이상 머무르면 위반
+  rider_overlap: 0.3       # 이륜차 박스와 이 비율 이상 겹치는 사람은 탑승자로 보고 제외
+
+output:
+  save_video: true
+  save_snapshots: true
+  alert_ttl_seconds: 2.0   # 화면 ALERT 문구 표시 시간

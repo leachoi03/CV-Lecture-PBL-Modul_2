@@ -1,0 +1,9 @@
+"""YAML 설정 파일 읽기."""
+from pathlib import Path
+
+import yaml
+
+
+def load_config(path) -> dict:
+    with open(Path(path), encoding="utf-8") as f:
+        return yaml.safe_load(f)
