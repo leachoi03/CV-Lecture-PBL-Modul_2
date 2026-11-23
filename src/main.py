@@ -18,7 +18,7 @@ from .event_logger import EventLogger
 from .frame_source import FrameSource
 from .preprocess import apply_clahe
 from .roi import ROIConfig
-from .rules import JaywalkRule, StopLineRule
+from .rules import JaywalkRule, LaneRule, StopLineRule
 from .signal_state import SignalProvider
 from .trajectory import TrajectoryStore
 from .visualize import AlertBoard, draw_hud, draw_roi, draw_tracks
@@ -27,7 +27,7 @@ from .visualize import AlertBoard, draw_hud, draw_roi, draw_tracks
 def parse_args():
     p = argparse.ArgumentParser(description="교차로 CCTV 교통 위반 감지")
     p.add_argument("--source", required=True, help="입력 영상 경로 또는 이미지 폴더")
-    p.add_argument("--roi", required=True, help="ROI JSON 경로 (src.roi_tool로 생성)")
+    p.add_argument("--roi", required=True, help="ROI JSON 경로 (웹 편집기 src.web_server 또는 src.roi_tool로 생성)")
     p.add_argument("--config", default="configs/default.yaml")
     p.add_argument("--out", default="outputs", help="결과 저장 상위 폴더")
     p.add_argument("--name", default=None, help="결과 폴더 이름 (기본: 영상이름_시각)")
@@ -79,6 +79,20 @@ def run(args) -> dict:
         min_frames=int(round(cfg["jaywalk"]["min_seconds"] * fps)),
         rider_overlap=cfg["jaywalk"]["rider_overlap"],
     )
+    lane_cfg = cfg.get("lane", {})
+    lane_rule = LaneRule(
+        roi, fps,
+        applies_to=lane_cfg.get("applies_to", ["vehicle"]),
+        stable_seconds=lane_cfg.get("stable_seconds", 0.3),
+        multi_window_seconds=lane_cfg.get("multi_window_seconds", 3.0),
+        turn_degrees=lane_cfg.get("turn_degrees", 45),
+        heading_seconds=lane_cfg.get("heading_seconds", 0.7),
+        min_move_px=lane_cfg.get("min_move_px", 15),
+        turn_checks=lane_cfg.get("turn_checks", ["right"]),
+        max_age=cfg["trajectory"]["max_age"],
+    )
+    if roi.lanes:
+        print(f"차로 {len(roi.lanes)}개: " + ", ".join(ln.id for ln in roi.lanes))
     logger = EventLogger(out_dir, cfg["output"]["save_snapshots"])
     alerts = AlertBoard(ttl_frames=int(cfg["output"]["alert_ttl_seconds"] * fps))
     writer = None
@@ -98,7 +112,8 @@ def run(args) -> dict:
         tracks = dt.update(inp)
         traj.update(tracks, frame_idx)
         signal = signal_provider.get(frame, t_sec)
-        events = stop_rule.update(tracks, frame_idx, t_sec, signal) + jay_rule.update(tracks, frame_idx, t_sec)
+        events = (stop_rule.update(tracks, frame_idx, t_sec, signal) + jay_rule.update(tracks, frame_idx, t_sec)
+                  + lane_rule.update(tracks, frame_idx, t_sec))
 
         dt_sec = time.perf_counter() - t0  # 검출·추적·판정 시간만 측정 (그리기·저장 제외)
         proc_time += dt_sec
@@ -107,7 +122,8 @@ def run(args) -> dict:
         # ---- 그리기 / 기록
         vis = frame.copy()
         draw_roi(vis, roi, signal)
-        draw_tracks(vis, tracks, traj, stop_rule.violators | jay_rule.violators)
+        draw_tracks(vis, tracks, traj, stop_rule.violators | jay_rule.violators | lane_rule.violators,
+                    lane_of=lane_rule.current)
         for e in events:
             alerts.add(e)
         alerts.draw(vis, frame_idx)

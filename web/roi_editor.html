@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도로·차로 ROI 편집기</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #dfe3ea;
+    --accent: #1f6feb; --accent-text: #ffffff; --danger: #d1242f; --ok: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171c; --panel: #1d2128; --text: #e6e9ef; --muted: #9aa3b2; --line: #2e343e;
+            --accent: #4c8dff; --accent-text: #0d1117; --danger: #ff6b6b; --ok: #56d364; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+           display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; line-height: 0; }
+  .stage video { width: 100%; height: auto; display: block; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .empty { padding: 80px 16px; text-align: center; color: #aab; line-height: 1.6; }
+  .controls { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .controls input[type=range] { flex: 1; min-width: 160px; }
+  aside { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+          align-self: start; }
+  aside h2 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; }
+  aside h2:first-child { margin-top: 0; }
+  button, select, input[type=text], input[type=number] { font: inherit; color: var(--text); background: var(--bg);
+          border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+  input[type=number] { width: 70px; }
+  input[type=text] { width: 90px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; align-items: center; }
+  .tabs { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+  .tabs button { flex: 1; border: 0; border-radius: 0; background: var(--bg); }
+  .tabs button.on { background: var(--accent); color: var(--accent-text); }
+  .tabs button.on kbd { color: var(--text); }
+  ul.polys { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
+  ul.polys li { display: flex; justify-content: space-between; align-items: center; padding: 3px 6px;
+                border-radius: 6px; cursor: pointer; }
+  ul.polys li.sel { background: var(--bg); outline: 1px solid var(--accent); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  .props { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-top: 6px; }
+  .props label { display: inline-flex; gap: 4px; align-items: center; }
+  .help { color: var(--muted); font-size: 12px; margin: 0; padding-left: 16px; }
+  .status { font-size: 12px; color: var(--muted); min-height: 18px; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--danger); }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px;
+        font-size: 11px; background: var(--bg); }
+</style>
+</head>
+<body>
+<header>
+  <h1>도로·차로 ROI 편집기</h1>
+  <label>서버 영상 <select id="videoSelect"><option value="">— 선택 —</option></select></label>
+  <label><button id="fileBtn" type="button">내 PC에서 열기…</button>
+    <input id="fileInput" type="file" accept="video/*" hidden></label>
+  <span id="videoInfo" class="status"></span>
+</header>
+
+<main>
+  <section>
+    <div class="stage" id="stage">
+      <div class="empty" id="empty">영상을 선택하세요.<br>화면을 클릭해 점을 찍으면 점들이 이어져 다각형이 됩니다.</div>
+      <video id="video" muted playsinline preload="auto" hidden></video>
+      <canvas id="canvas" hidden></canvas>
+    </div>
+    <div class="controls">
+      <button id="playBtn" type="button" disabled>▶ 재생</button>
+      <input id="seek" type="range" min="0" max="0" step="0.04" value="0" disabled>
+      <span id="timeLabel" class="status">0.0 / 0.0초</span>
+    </div>
+  </section>
+
+  <aside>
+    <h2>편집 대상</h2>
+    <div class="tabs">
+      <button id="modeRoad" type="button" class="on">도로 <kbd>1</kbd></button>
+      <button id="modeLane" type="button">차로 <kbd>2</kbd></button>
+    </div>
+    <div class="row">
+      <button id="newBtn" type="button" class="primary" disabled>새 다각형</button>
+      <button id="closeBtn" type="button" disabled>닫기 (Enter)</button>
+    </div>
+    <div class="row">
+      <button id="undoBtn" type="button" disabled>점 취소 (Ctrl+Z)</button>
+      <button id="delBtn" type="button" class="danger" disabled>선택 삭제 (Del)</button>
+    </div>
+    <div class="row">
+      <label><input id="snapChk" type="checkbox" checked> 가까운 꼭짓점에 붙이기</label>
+    </div>
+
+    <h2>도로 다각형</h2>
+    <ul class="polys" id="roadList"></ul>
+    <p class="status" id="roadEmpty">아직 없음</p>
+
+    <h2>차로</h2>
+    <ul class="polys" id="laneList"></ul>
+    <p class="status" id="laneEmpty">아직 없음</p>
+    <div class="props" id="laneProps" hidden>
+      <div class="row">
+        <label>진입로 <input id="pApproach" type="text" maxlength="20" placeholder="예: 북"></label>
+        <label><input id="pIndex" type="number" min="1" max="20" step="1"> 차로</label>
+      </div>
+      <div class="row">
+        <label>구역 <select id="pZone">
+          <option value="approach">진입부 (정지선 앞)</option>
+          <option value="intersection">교차로 안 (유도선)</option>
+        </select></label>
+      </div>
+      <div class="row" id="pTurns">
+        진행 가능:
+        <label><input type="checkbox" value="left"> 좌</label>
+        <label><input type="checkbox" value="straight"> 직</label>
+        <label><input type="checkbox" value="right"> 우</label>
+        <label><input type="checkbox" value="uturn"> 유턴</label>
+      </div>
+      <p class="status" id="pId"></p>
+    </div>
+
+    <h2>저장</h2>
+    <div class="row">
+      <button id="saveBtn" type="button" class="primary" disabled>서버에 저장</button>
+      <button id="downloadBtn" type="button" disabled>JSON 내려받기</button>
+    </div>
+    <div class="row">
+      <button id="uploadBtn" type="button" disabled>JSON 불러오기…</button>
+      <input id="jsonInput" type="file" accept=".json,application/json" hidden>
+    </div>
+    <p class="status" id="saveStatus"></p>
+
+    <h2>사용법</h2>
+    <ul class="help">
+      <li>영상을 원하는 장면으로 옮기고(재생 중에도 가능) 화면을 클릭해 점을 찍습니다.</li>
+      <li>첫 점을 다시 클릭하거나 <kbd>Enter</kbd>/우클릭하면 다각형이 닫힙니다.</li>
+      <li>꼭짓점은 끌어서 옮기고, 변을 더블클릭하면 점 추가, 꼭짓점을 더블클릭하면 삭제됩니다.
+        꼭짓점을 끌지 않고 한 번 클릭하면 그 점에서 새 다각형이 시작됩니다.</li>
+      <li><b>도로</b>: 차가 다닐 수 있는 영역 전체. 여러 개 그려도 됩니다.</li>
+      <li><b>차로</b>: 차선과 차선 사이 한 칸씩 그립니다. 옆 차로의 꼭짓점에 붙여 찍으면 경계가 딱 맞습니다.
+        1차로 = 중앙선 쪽. 교차로 안의 좌회전 유도선 칸은 구역을 "교차로 안"으로 둡니다.</li>
+      <li>좌표는 영상 원본 픽셀 기준으로 저장됩니다.</li>
+    </ul>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const ROAD_COLOR = "#2ea043";
+  const LANE_COLORS = ["#1f6feb", "#d29922", "#a371f7", "#db61a2", "#f0883e", "#39c5cf"];
+  const TURN_ICON = {left: "←", straight: "↑", right: "→", uturn: "↶"};
+  const TURNS = ["left", "straight", "right", "uturn"];
+  const HIT = 10;   // 클릭 판정 반경 (화면 px)
+
+  const $ = id => document.getElementById(id);
+  const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+  const state = {
+    source: null,        // {kind: "server"|"local", name, stem}
+    shapes: [],          // {kind: "road"|"lane", pts: [[x,y],...], (차로) approach, index, zone, turns}
+    mode: "road",        // 지금 그리고 고치는 대상
+    cur: null,           // 그리는 중인 점 목록
+    sel: -1,             // 선택된 shapes 번호
+    drag: null,          // {shape, idx}
+    hover: null,         // 마우스 위치 (영상 픽셀)
+    extra: {},           // 불러온 JSON 의 나머지 항목(정지선·신호 등)은 그대로 보존
+    dirty: false,
+  };
+
+  // ------------------------------------------------------------ 차로 속성
+  const laneId = L => `${L.approach}-${L.zone === "intersection" ? "X" : ""}${L.index}`;
+  const approaches = () => [...new Set(state.shapes.filter(s => s.kind === "lane").map(s => s.approach))];
+  const laneColor = L => LANE_COLORS[Math.max(0, approaches().indexOf(L.approach)) % LANE_COLORS.length];
+  function newLaneProps() {
+    // 마지막으로 고친 차로와 같은 진입로·구역에서 다음 번호를 제안한다
+    const lanes = state.shapes.filter(s => s.kind === "lane");
+    const last = lanes[lanes.length - 1];
+    const approach = last ? last.approach : "A", zone = last ? last.zone : "approach";
+    const same = lanes.filter(s => s.approach === approach && s.zone === zone);
+    const index = same.length ? Math.max(...same.map(s => s.index)) + 1 : 1;
+    return {approach, zone, index, turns: zone === "intersection" ? ["left"] : ["straight"]};
+  }
+  function duplicateIds() {
+    const seen = new Set(), dup = new Set();
+    state.shapes.filter(s => s.kind === "lane").forEach(L => { const id = laneId(L); (seen.has(id) ? dup : seen).add(id); });
+    return dup;
+  }
+
+  // ------------------------------------------------------------ 좌표 변환
+  function scale() { return canvas.width / canvas.clientWidth; }  // 화면 px → 영상 px
+  function toVideo(ev) {
+    const r = canvas.getBoundingClientRect(), s = scale();
+    return [Math.round((ev.clientX - r.left) * s), Math.round((ev.clientY - r.top) * s)];
+  }
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const editable = i => state.shapes[i].kind === state.mode;
+
+  function hitVertex(p) {
+    const r = HIT * scale();
+    for (let i = state.shapes.length - 1; i >= 0; i--) {
+      if (!editable(i)) continue;
+      const P = state.shapes[i].pts;
+      for (let j = 0; j < P.length; j++) if (dist(p, P[j]) <= r) return {shape: i, idx: j};
+    }
+    return null;
+  }
+  function snap(p, skip) {
+    // 다른 다각형(도로·차로 모두)의 가장 가까운 꼭짓점에 붙인다
+    if (!$("snapChk").checked) return p;
+    let best = null, bd = HIT * scale();
+    state.shapes.forEach((S, i) => { if (i === skip) return;
+      S.pts.forEach(q => { const d = dist(p, q); if (d <= bd) { bd = d; best = q; } }); });
+    return best ? [best[0], best[1]] : p;
+  }
+  function segDist(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+    return dist(p, [a[0] + t * dx, a[1] + t * dy]);
+  }
+  function hitEdge(p) {
+    const r = HIT * scale();
+    for (let i = state.shapes.length - 1; i >= 0; i--) {
+      if (!editable(i)) continue;
+      const P = state.shapes[i].pts;
+      for (let j = 0; j < P.length; j++)
+        if (segDist(p, P[j], P[(j + 1) % P.length]) <= r) return {shape: i, idx: j + 1};
+    }
+    return null;
+  }
+  function insidePoly(p, P) {
+    let inside = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [xi, yi] = P[i], [xj, yj] = P[j];
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  // ------------------------------------------------------------ 그리기
+  function label(text, x, y, s) {
+    ctx.font = `bold ${13 * s}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3 * s; ctx.strokeStyle = "#000"; ctx.fillStyle = "#fff";
+    ctx.strokeText(text, x, y); ctx.fillText(text, x, y);
+  }
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const s = scale(), lw = 2 * s, rad = 5 * s;
+    // 지금 편집하지 않는 종류를 먼저(흐리게), 편집 중인 종류를 위에 그린다
+    const order = state.shapes.map((S, i) => i).sort((a, b) => editable(a) - editable(b));
+    const dup = duplicateIds();
+    let roadNo = 0; const roadNos = state.shapes.map(S => S.kind === "road" ? ++roadNo : 0);
+    order.forEach(i => {
+      const S = state.shapes[i], P = S.pts, on = editable(i), selected = i === state.sel;
+      const c = S.kind === "road" ? ROAD_COLOR : laneColor(S);
+      ctx.globalAlpha = on ? 1 : 0.35;
+      ctx.beginPath(); P.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
+      ctx.fillStyle = c + (selected ? "66" : S.kind === "road" ? "26" : "40"); ctx.fill();
+      ctx.lineWidth = selected ? lw * 1.6 : lw; ctx.strokeStyle = c; ctx.stroke();
+      if (on) { ctx.fillStyle = "#fff"; P.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill(); ctx.stroke(); }); }
+      const cx = P.reduce((a, q) => a + q[0], 0) / P.length, cy = P.reduce((a, q) => a + q[1], 0) / P.length;
+      if (S.kind === "road") label(`도로 ${roadNos[i]}`, cx, cy, s);
+      else {
+        label((dup.has(laneId(S)) ? "⚠ " : "") + laneId(S), cx, cy - 8 * s, s);
+        label(S.turns.map(t => TURN_ICON[t]).join(""), cx, cy + 9 * s, s);
+      }
+      ctx.globalAlpha = 1;
+    });
+    if (state.cur) {
+      const P = state.cur, c = "#ffd33d";
+      ctx.lineWidth = lw; ctx.strokeStyle = c; ctx.setLineDash([8 * s, 6 * s]);
+      ctx.beginPath(); P.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      if (state.hover && P.length) ctx.lineTo(...snap(state.hover));
+      ctx.stroke(); ctx.setLineDash([]);
+      P.forEach(([x, y], k) => {
+        const closing = k === 0 && P.length >= 3 && state.hover && dist(state.hover, P[0]) <= HIT * s;
+        ctx.beginPath(); ctx.arc(x, y, closing ? rad * 1.8 : rad, 0, 7);
+        ctx.fillStyle = k === 0 ? c : "#fff"; ctx.fill(); ctx.strokeStyle = c; ctx.stroke();
+      });
+    }
+    if (state.hover && (state.cur || !state.drag)) {   // 붙을 꼭짓점 표시
+      const q = snap(state.hover);
+      if (q !== state.hover && (state.cur || !hitVertex(state.hover))) {
+        ctx.beginPath(); ctx.arc(q[0], q[1], rad * 2, 0, 7); ctx.strokeStyle = "#ffd33d"; ctx.lineWidth = lw; ctx.stroke();
+      }
+    }
+  }
+
+  function listItem(i, swatch, name, note) {
+    const li = document.createElement("li");
+    li.className = i === state.sel ? "sel" : "";
+    li.innerHTML = `<span><span class="swatch" style="background:${swatch}"></span>${name}</span><span class="status">${note}</span>`;
+    li.onclick = () => { setMode(state.shapes[i].kind); state.sel = i === state.sel ? -1 : i; refreshUI(); };
+    return li;
+  }
+  function refreshUI() {
+    const has = !!state.source;
+    ["newBtn", "uploadBtn", "downloadBtn", "playBtn", "seek"].forEach(id => $(id).disabled = !has);
+    $("saveBtn").disabled = !has || state.source.kind !== "server";
+    $("saveBtn").title = has && state.source.kind !== "server" ? "내 PC 영상은 JSON 내려받기로 저장하세요" : "";
+    $("closeBtn").disabled = !(state.cur && state.cur.length >= 3);
+    $("undoBtn").disabled = !(state.cur && state.cur.length);
+    $("delBtn").disabled = state.sel < 0;
+    $("newBtn").textContent = state.cur ? "그리는 중… (Esc 취소)" : (state.mode === "road" ? "새 도로 다각형" : "새 차로");
+    $("modeRoad").classList.toggle("on", state.mode === "road");
+    $("modeLane").classList.toggle("on", state.mode === "lane");
+
+    const dup = duplicateIds();
+    const roadUl = $("roadList"), laneUl = $("laneList"); roadUl.innerHTML = laneUl.innerHTML = "";
+    let roadNo = 0;
+    state.shapes.forEach((S, i) => {
+      if (S.kind === "road") roadUl.appendChild(listItem(i, ROAD_COLOR, `도로 ${++roadNo}`, `점 ${S.pts.length}개`));
+      else laneUl.appendChild(listItem(i, laneColor(S), (dup.has(laneId(S)) ? "⚠ " : "") + laneId(S),
+        `${S.zone === "intersection" ? "교차로 안 " : ""}${S.turns.map(t => TURN_ICON[t]).join("") || "진행방향 없음"}`));
+    });
+    $("roadEmpty").hidden = roadUl.children.length > 0;
+    $("laneEmpty").hidden = laneUl.children.length > 0;
+
+    const L = state.sel >= 0 && state.shapes[state.sel].kind === "lane" ? state.shapes[state.sel] : null;
+    $("laneProps").hidden = !L;
+    if (L) {
+      $("pApproach").value = L.approach; $("pIndex").value = L.index; $("pZone").value = L.zone;
+      $("pTurns").querySelectorAll("input").forEach(cb => cb.checked = L.turns.includes(cb.value));
+      $("pId").textContent = `ID: ${laneId(L)}` + (dup.has(laneId(L)) ? " — 같은 ID의 차로가 또 있습니다" : "");
+      $("pId").className = "status" + (dup.has(laneId(L)) ? " err" : "");
+    }
+    draw();
+  }
+
+  function setStatus(msg, kind = "") { const el = $("saveStatus"); el.textContent = msg; el.className = "status " + kind; }
+  function setMode(m) {
+    if (m === state.mode) return;
+    state.mode = m; state.cur = null;
+    if (state.sel >= 0 && state.shapes[state.sel].kind !== m) state.sel = -1;
+    refreshUI();
+  }
+  $("modeRoad").onclick = () => setMode("road");
+  $("modeLane").onclick = () => setMode("lane");
+
+  // 차로 속성 편집
+  function editLane(fn) {
+    const L = state.shapes[state.sel]; if (!L || L.kind !== "lane") return;
+    fn(L); state.dirty = true; refreshUI();
+  }
+  $("pApproach").addEventListener("input", e => editLane(L => L.approach = e.target.value.trim() || "A"));
+  $("pIndex").addEventListener("input", e => { const v = parseInt(e.target.value, 10); if (v >= 1) editLane(L => L.index = v); });
+  $("pZone").addEventListener("change", e => editLane(L => L.zone = e.target.value));
+  $("pTurns").addEventListener("change", () => editLane(L =>
+    L.turns = TURNS.filter(t => $("pTurns").querySelector(`input[value=${t}]`).checked)));
+
+  // ------------------------------------------------------------ 편집 동작
+  function startPoly() { if (!state.source) return; state.cur = []; state.sel = -1; refreshUI(); }
+  function closePoly() {
+    if (!state.cur || state.cur.length < 3) return;
+    const S = state.mode === "road" ? {kind: "road", pts: state.cur} : {kind: "lane", pts: state.cur, ...newLaneProps()};
+    state.shapes.push(S); state.sel = state.shapes.length - 1; state.cur = null; state.dirty = true;
+    refreshUI();
+  }
+  function undoPoint() { if (state.cur && state.cur.length) { state.cur.pop(); refreshUI(); } }
+  function deleteSel() {
+    if (state.sel < 0) return;
+    state.shapes.splice(state.sel, 1); state.sel = -1; state.dirty = true; refreshUI();
+  }
+
+  canvas.addEventListener("mousedown", ev => {
+    if (ev.button !== 0) return;
+    const p = toVideo(ev);
+    if (state.cur) {   // 그리기 모드
+      if (state.cur.length >= 3 && dist(p, state.cur[0]) <= HIT * scale()) return closePoly();
+      const last = state.cur[state.cur.length - 1];
+      if (last && dist(p, last) <= HIT * scale()) return;   // 같은 자리 두 번 클릭(더블클릭)은 무시
+      state.cur.push(snap(p)); refreshUI(); return;
+    }
+    const v = hitVertex(p);
+    // 꼭짓점: 끌면 옮기고, 끌지 않고 놓으면 그 점에서 새 다각형을 시작한다(옆 차로 그릴 때)
+    if (v) { state.drag = {...v, from: p, moved: false}; state.sel = v.shape; refreshUI(); return; }
+    const inside = state.shapes.map((S, i) => editable(i) && insidePoly(p, S.pts) ? i : -1).filter(i => i >= 0).pop();
+    if (inside !== undefined) { state.sel = inside; refreshUI(); return; }
+    // 편집 중인 종류의 다각형이 없는 곳을 클릭하면 바로 새 다각형을 시작한다
+    state.cur = [snap(p)]; state.sel = -1; refreshUI();
+  });
+  canvas.addEventListener("mousemove", ev => {
+    const p = toVideo(ev); state.hover = p;
+    if (state.drag && !state.drag.moved && dist(p, state.drag.from) > 3 * scale()) state.drag.moved = true;
+    if (state.drag && state.drag.moved) {
+      let q = snap(p, state.drag.shape);
+      q = [Math.max(0, Math.min(canvas.width, q[0])), Math.max(0, Math.min(canvas.height, q[1]))];
+      state.shapes[state.drag.shape].pts[state.drag.idx] = q; state.dirty = true;
+    }
+    canvas.style.cursor = state.cur ? "crosshair" : (hitVertex(p) ? "move" : "crosshair");
+    draw();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!state.drag) return;
+    const d = state.drag; state.drag = null;
+    if (!d.moved) { const q = state.shapes[d.shape].pts[d.idx]; state.cur = [[q[0], q[1]]]; state.sel = -1; }
+    refreshUI();
+  });
+  canvas.addEventListener("mouseleave", () => { state.hover = null; draw(); });
+  canvas.addEventListener("contextmenu", ev => { ev.preventDefault(); if (state.cur) closePoly(); });
+  canvas.addEventListener("dblclick", ev => {
+    if (state.cur && state.cur.length === 1) state.cur = null;   // 첫 클릭이 꼭짓점에서 시작한 새 다각형이면 취소
+    if (state.cur) return;
+    const p = toVideo(ev), v = hitVertex(p);
+    if (v) {
+      if (state.shapes[v.shape].pts.length > 3) { state.shapes[v.shape].pts.splice(v.idx, 1); state.dirty = true; }
+    } else {
+      const e = hitEdge(p);
+      if (e) { state.shapes[e.shape].pts.splice(e.idx, 0, p); state.sel = e.shape; state.dirty = true; }
+    }
+    refreshUI();
+  });
+  window.addEventListener("keydown", ev => {
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) {
+      if (ev.key === "Enter" || ev.key === "Escape") ev.target.blur();
+      return;
+    }
+    if (ev.key === "Enter") closePoly();
+    else if (ev.key === "Escape") { state.cur = null; refreshUI(); }
+    else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); undoPoint(); }
+    else if ((ev.key === "Delete" || ev.key === "Backspace") && !state.cur) deleteSel();
+    else if (ev.key === "1") setMode("road");
+    else if (ev.key === "2") setMode("lane");
+    else if (ev.key === " " && state.source) { ev.preventDefault(); togglePlay(); }
+  });
+  $("newBtn").onclick = startPoly; $("closeBtn").onclick = closePoly;
+  $("undoBtn").onclick = undoPoint; $("delBtn").onclick = deleteSel;
+
+  // ------------------------------------------------------------ 영상
+  function togglePlay() { video.paused ? video.play() : video.pause(); }
+  $("playBtn").onclick = togglePlay;
+  video.addEventListener("play", () => $("playBtn").textContent = "❚❚ 일시정지");
+  video.addEventListener("pause", () => $("playBtn").textContent = "▶ 재생");
+  video.addEventListener("timeupdate", () => {
+    $("seek").value = video.currentTime;
+    $("timeLabel").textContent = `${video.currentTime.toFixed(1)} / ${(video.duration || 0).toFixed(1)}초`;
+  });
+  $("seek").addEventListener("input", e => { video.currentTime = +e.target.value; });
+  video.addEventListener("loadedmetadata", () => {
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    $("seek").max = video.duration || 0;
+    $("videoInfo").textContent = `${video.videoWidth}×${video.videoHeight}, ${(video.duration || 0).toFixed(1)}초`;
+    $("empty").hidden = true; video.hidden = false; canvas.hidden = false;
+    refreshUI();
+  });
+  video.addEventListener("error", () => setStatus("영상을 재생할 수 없습니다. 브라우저가 지원하는 코덱(H.264 mp4 등)인지 확인하세요.", "err"));
+
+  function confirmDiscard() { return !state.dirty || confirm("저장하지 않은 ROI가 있습니다. 버리고 다른 영상을 열까요?"); }
+  function resetRoi() { state.shapes = []; state.cur = null; state.sel = -1; state.extra = {}; state.dirty = false; }
+  const okPoly = P => Array.isArray(P) && P.length >= 3;
+  const roundPts = P => P.map(([x, y]) => [Math.round(x), Math.round(y)]);
+  function applyRoi(data) {
+    const {road = [], lanes = [], ...rest} = data || {};
+    state.shapes = [
+      ...road.filter(okPoly).map(P => ({kind: "road", pts: roundPts(P)})),
+      ...lanes.filter(L => L && okPoly(L.polygon)).map(L => ({
+        kind: "lane", pts: roundPts(L.polygon), approach: String(L.approach || "A"),
+        index: Math.max(1, parseInt(L.index, 10) || 1), zone: L.zone === "intersection" ? "intersection" : "approach",
+        turns: TURNS.filter(t => (L.turns || []).includes(t))})),
+    ];
+    state.extra = rest; state.sel = -1; state.dirty = false;
+  }
+
+  async function openServerVideo(name) {
+    if (!name || !confirmDiscard()) return;
+    resetRoi();
+    const stem = name.replace(/\.[^.]+$/, "");
+    state.source = {kind: "server", name, stem};
+    video.src = "/video/" + encodeURIComponent(name);
+    try {
+      const r = await fetch("/api/roi/" + encodeURIComponent(stem));
+      if (r.ok) { applyRoi(await r.json()); setStatus(`기존 ROI를 불러왔습니다 (${stem}.json)`, "ok"); }
+      else setStatus(`새 ROI (저장 이름: ${stem}.json)`);
+    } catch { setStatus(""); }
+    refreshUI();
+  }
+  $("videoSelect").onchange = e => openServerVideo(e.target.value);
+
+  $("fileBtn").onclick = () => $("fileInput").click();
+  $("fileInput").onchange = e => {
+    const f = e.target.files[0]; if (!f || !confirmDiscard()) return;
+    resetRoi();
+    state.source = {kind: "local", name: f.name, stem: f.name.replace(/\.[^.]+$/, "")};
+    $("videoSelect").value = "";
+    video.src = URL.createObjectURL(f);
+    setStatus("내 PC 영상: 저장은 'JSON 내려받기'로 합니다.");
+    refreshUI();
+  };
+
+  async function loadVideoList() {
+    try {
+      const r = await fetch("/api/videos");
+      if (!r.ok) throw 0;
+      const list = await r.json();
+      const sel = $("videoSelect");
+      list.forEach(v => { const o = document.createElement("option"); o.value = v.name;
+        o.textContent = v.name + (v.has_roi ? "  (ROI 있음)" : ""); sel.appendChild(o); });
+      if (!list.length) sel.options[0].textContent = "— data/videos 에 영상 없음 —";
+    } catch {
+      // 서버 없이 파일로 연 경우: 내 PC 영상만 쓸 수 있다
+      $("videoSelect").disabled = true;
+      $("videoSelect").options[0].textContent = "— 서버 없이 열림 —";
+    }
+  }
+
+  // ------------------------------------------------------------ 저장/불러오기
+  function roiJson() {
+    const base = {stop_lines: [], crosswalks: [], signal: {mode: "timeline", cycle: null,
+                  timeline: [{start: 0, end: 9999, state: "red"}]}};
+    return {...base, ...state.extra,
+            road: state.shapes.filter(S => S.kind === "road").map(S => S.pts),
+            lanes: state.shapes.filter(S => S.kind === "lane").map(L => ({
+              id: laneId(L), approach: L.approach, index: L.index, zone: L.zone, turns: L.turns, polygon: L.pts})),
+            _roi_editor: {video: state.source && state.source.name, width: canvas.width, height: canvas.height,
+                          saved_at: new Date().toISOString()}};
+  }
+  function beforeSave() {
+    if (state.cur) closePoly();
+    const dup = duplicateIds();
+    if (dup.size) { setStatus(`차로 ID가 겹칩니다: ${[...dup].join(", ")} — 진입로나 번호를 고치세요.`, "err"); return false; }
+    return true;
+  }
+  $("saveBtn").onclick = async () => {
+    if (!beforeSave()) return;
+    if (!state.shapes.length && !confirm("다각형이 없습니다. 빈 ROI로 저장할까요?")) return;
+    try {
+      const r = await fetch("/api/roi/" + encodeURIComponent(state.source.stem), {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(roiJson())});
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error || r.status);
+      state.dirty = false; setStatus(`저장됨: ${res.path}`, "ok");
+    } catch (e) { setStatus("저장 실패: " + e.message, "err"); }
+  };
+  $("downloadBtn").onclick = () => {
+    if (!beforeSave()) return;
+    const blob = new Blob([JSON.stringify(roiJson(), null, 2)], {type: "application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = (state.source ? state.source.stem : "roi") + ".json"; a.click();
+    URL.revokeObjectURL(a.href); state.dirty = false;
+  };
+  $("uploadBtn").onclick = () => $("jsonInput").click();
+  $("jsonInput").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { applyRoi(JSON.parse(await f.text())); state.dirty = true; setStatus(`불러옴: ${f.name}`, "ok"); }
+    catch { setStatus("JSON 형식이 아닙니다.", "err"); }
+    e.target.value = ""; refreshUI();
+  };
+  window.addEventListener("beforeunload", ev => { if (state.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+  window.addEventListener("resize", draw);
+
+  loadVideoList(); refreshUI();
+})();
+</script>
+</body>
+</html>

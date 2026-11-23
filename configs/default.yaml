@@ -28,6 +28,15 @@ jaywalk:
   min_seconds: 1.0         # 횡단보도 밖 차도에 이 시간 이상 머무르면 위반
   rider_overlap: 0.3       # 이륜차 박스와 이 비율 이상 겹치는 사람은 탑승자로 보고 제외
 
+lane:                      # 차로 위반 (ROI JSON 의 lanes 가 있을 때만 동작)
+  applies_to: [vehicle]    # 판정할 카테고리
+  stable_seconds: 0.3      # 같은 차로가 이 시간 이상 이어져야 그 차로에 있다고 확정 (경계 흔들림 제거)
+  multi_window_seconds: 3.0  # 이 시간 안에 차로 번호가 2 이상 바뀌면 '2차로 이상 변경'
+  turn_degrees: 45         # 진입 방향 대비 이 각도 이상 꺾이면 회전으로 본다
+  heading_seconds: 0.7     # 현재 진행 방향을 구할 최근 구간 길이
+  min_move_px: 15          # 방향을 구하려면 이 거리 이상 움직여야 한다
+  turn_checks: [right]     # 진입 차로의 진행 가능 방향과 비교할 회전 (left 도 추가 가능)
+
 output:
   save_video: true
   save_snapshots: true
