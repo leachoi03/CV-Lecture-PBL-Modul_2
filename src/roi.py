@@ -1,8 +1,8 @@
-"""관심 영역(ROI): 정지선, 차도, 횡단보도 + 기하 판정 함수."""
+"""관심 영역(ROI): 정지선, 차도, 횡단보도, 차로 + 기하 판정 함수."""
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -63,6 +63,33 @@ class StopLine:
         return 1 if s > 0 else -1
 
 
+# ---------------------------------------------------------------- 차로
+@dataclass
+class Lane:
+    """차선과 차선 사이 한 칸. index 1 = 중앙선 쪽 차로."""
+    id: str
+    approach: str                 # 진입로 이름 (예: "북")
+    index: int
+    polygon: np.ndarray
+    zone: str = "approach"        # "approach": 정지선 앞 진입부, "intersection": 교차로 안 유도선 칸
+    turns: Tuple[str, ...] = ()   # 진행 가능 방향: left / straight / right / uturn
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Lane":
+        zone = d.get("zone", "approach")
+        index = int(d["index"])
+        approach = str(d["approach"])
+        return cls(
+            id=d.get("id") or f"{approach}-{'X' if zone == 'intersection' else ''}{index}",
+            approach=approach, index=index, polygon=to_poly(d["polygon"]),
+            zone=zone, turns=tuple(d.get("turns", ())),
+        )
+
+    @property
+    def area(self) -> float:
+        return float(abs(cv2.contourArea(self.polygon)))
+
+
 # ---------------------------------------------------------------- ROI 설정 전체
 @dataclass
 class ROIConfig:
@@ -70,6 +97,7 @@ class ROIConfig:
     road: List[np.ndarray] = field(default_factory=list)
     crosswalks: List[np.ndarray] = field(default_factory=list)
     signal: dict = field(default_factory=dict)
+    lanes: List[Lane] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "ROIConfig":
@@ -87,6 +115,7 @@ class ROIConfig:
             road=[to_poly(p) for p in d.get("road", [])],
             crosswalks=[to_poly(p) for p in d.get("crosswalks", [])],
             signal=d.get("signal", {}),
+            lanes=[Lane.from_dict(x) for x in d.get("lanes", [])],
         )
 
     @classmethod
@@ -99,3 +128,8 @@ class ROIConfig:
 
     def in_crosswalk(self, pt: Point) -> bool:
         return any(in_polygon(p, pt) for p in self.crosswalks)
+
+    def lane_at(self, pt: Point, zone: Optional[str] = None) -> Optional[Lane]:
+        """점(보통 차량 bbox 아래 가운데)이 들어 있는 차로. 겹치면 더 작은 칸을 고른다."""
+        hits = [ln for ln in self.lanes if (zone is None or ln.zone == zone) and in_polygon(ln.polygon, pt)]
+        return min(hits, key=lambda ln: ln.area) if hits else None
