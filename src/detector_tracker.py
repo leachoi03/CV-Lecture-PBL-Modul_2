@@ -3,7 +3,7 @@
 Ultralytics의 model.track(persist=True)는 프레임마다 검출을 수행한 뒤
 내장 추적기로 이전 프레임의 트랙과 매칭해 고유 ID를 붙여 준다.
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ultralytics import YOLO
 
@@ -32,15 +32,18 @@ class DetectorTracker:
         self.classes = sorted(self.cls2cat)
         self.names = self.model.names
 
-    def update(self, frame) -> List[Track]:
-        """프레임 한 장을 처리해 ID가 부여된 트랙 목록을 반환한다."""
+    def update(self, frame, offset: Tuple[int, int] = (0, 0), imgsz: Optional[int] = None) -> List[Track]:
+        """프레임 한 장을 처리해 ID가 부여된 트랙 목록을 반환한다.
+
+        frame 이 원본에서 잘라낸 이미지라면 offset=(dx, dy)를 주어 bbox 를 원본 좌표로 되돌린다.
+        """
         result = self.model.track(
             frame,
             persist=True,  # 이전 프레임의 추적 상태 유지
             tracker=self.tracker,
             conf=self.conf,
             iou=self.iou,
-            imgsz=self.imgsz,
+            imgsz=imgsz or self.imgsz,
             classes=self.classes,
             device=self.device,
             verbose=False,
@@ -52,6 +55,8 @@ class DetectorTracker:
             return []
 
         xyxy = boxes.xyxy.cpu().numpy()
+        xyxy[:, [0, 2]] += offset[0]
+        xyxy[:, [1, 3]] += offset[1]
         ids = boxes.id.int().cpu().tolist()
         cls_ids = boxes.cls.int().cpu().tolist()
         confs = boxes.conf.cpu().tolist()
