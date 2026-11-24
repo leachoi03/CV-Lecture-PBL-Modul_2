@@ -13,6 +13,16 @@ categories:
   two_wheeler: [1, 3]      # bicycle, motorcycle
   person: [0]
 
+detect_region:             # 지정한 ROI(도로·차로·횡단보도) 부분만 검출
+  enabled: true            # false 면 전체 화면 검출 (ROI 다각형이 없어도 전체 화면)
+  crop: true               # ROI 를 감싸는 사각형만 잘라 YOLO 에 넣음 (빨라지고 작은 차량이 크게 보임)
+  mask: true               # 사각형 안의 ROI 밖 픽셀을 회색으로 가림
+  keep_scale: false        # false: 잘라낸 부분을 imgsz 로 확대해 먼 차량까지 검출 (84011: ROI 안 검출 +50%, 느려짐)
+                           # true : imgsz 를 잘라낸 비율만큼 줄여 빠르게 (84011: 2.4배 빠름, ROI 안 검출 -11%)
+  margin_px: 16            # 가릴 때 ROI 를 사방으로 이만큼 넓힘
+  up_frac: 0.15            # 가릴 때 ROI 를 위로 (화면 높이 x 이 값) 만큼 더 넓힘 (차량 지붕이 잘리지 않게)
+  foot_tolerance_px: 12    # 지면 접점이 ROI 밖 이 거리 안이면 남김, 더 멀면 버림
+
 preprocess:
   clahe: false             # 야간 영상 대비 향상 (LAB 공간 L 채널 CLAHE)
   clahe_clip: 2.0

@@ -13,6 +13,7 @@ from pathlib import Path
 import cv2
 
 from .config import load_config
+from .detect_region import DetectRegion
 from .detector_tracker import DetectorTracker
 from .event_logger import EventLogger
 from .frame_source import FrameSource
@@ -63,6 +64,13 @@ def run(args) -> dict:
     # ---- 구성 요소 준비
     roi = ROIConfig.load(args.roi)
     signal_provider = SignalProvider(roi.signal)
+    region = DetectRegion.from_roi(roi, width, height, cfg.get("detect_region"))
+    if region.active:
+        x0, y0, x1, y1 = region.rect
+        print(f"검출 영역: ROI 주변 {x1 - x0}x{y1 - y0} (원본의 {100 * region.area_ratio:.0f}%), "
+              f"ROI 밖 가리기 {'켬' if region.mask else '끔'}, YOLO 입력 {region.imgsz(cfg['imgsz'])}")
+    else:
+        print("검출 영역: 전체 화면 (ROI 다각형 없음 또는 detect_region.enabled=false)")
     dt = DetectorTracker(
         model=cfg["model"],
         tracker=cfg["tracker"],
@@ -109,7 +117,8 @@ def run(args) -> dict:
         t0 = time.perf_counter()
 
         inp = apply_clahe(frame, cfg["preprocess"]["clahe_clip"]) if cfg["preprocess"]["clahe"] else frame
-        tracks = dt.update(inp)
+        det_img, offset = region.prepare(inp)
+        tracks = region.filter(dt.update(det_img, offset, region.imgsz(cfg["imgsz"])))
         traj.update(tracks, frame_idx)
         signal = signal_provider.get(frame, t_sec)
         events = (stop_rule.update(tracks, frame_idx, t_sec, signal) + jay_rule.update(tracks, frame_idx, t_sec)
@@ -122,6 +131,7 @@ def run(args) -> dict:
         # ---- 그리기 / 기록
         vis = frame.copy()
         draw_roi(vis, roi, signal)
+        region.draw(vis)
         draw_tracks(vis, tracks, traj, stop_rule.violators | jay_rule.violators | lane_rule.violators,
                     lane_of=lane_rule.current)
         for e in events:
@@ -159,6 +169,8 @@ def run(args) -> dict:
         "processing_fps": frame_idx / proc_time if proc_time else 0.0,
         "avg_ms_per_frame": 1000 * proc_time / frame_idx if frame_idx else 0.0,
         "unique_track_ids": len(traj.all_ids),
+        "detect_region": {"active": region.active, "rect": list(region.rect), "area_ratio": region.area_ratio,
+                          "mask": region.mask},
         "events": logger.counts,
         "config": cfg,
     }

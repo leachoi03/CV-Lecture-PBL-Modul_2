@@ -180,6 +180,7 @@ python -m src.auto_roi --source "data/094/01.데이터/2.Validation/원천데이
 | --- | --- | --- |
 | `src/frame_source.py` | 영상/이미지 폴더 입력 통합 | ① |
 | `src/detector_tracker.py` | YOLOv8 + ByteTrack/BoT-SORT, 트랙 목록 반환 | ① |
+| `src/detect_region.py` | ROI 부분만 잘라·가려서 검출, ROI 밖 객체 제거 | ① |
 | `src/trajectory.py` | ID별 지면 접점 궤적 | ① |
 | `src/preprocess.py` | 야간용 CLAHE | ① |
 | `src/roi.py` | 정지선·차도·횡단보도, 기하 판정 함수 | ② |
@@ -198,6 +199,24 @@ python -m src.auto_roi --source "data/094/01.데이터/2.Validation/원천데이
 | `configs/` | 실행 설정, 영상별 ROI | 전원 |
 | `data/gt/` | 사람이 기록한 정답 이벤트 | ④ |
 | `docs/ai_log.md` | AI 도구 활용 기록 (평가 항목) | 전원 |
+
+## 검출 영역 제한 (`detect_region`)
+
+ROI(도로·차로·횡단보도 다각형)가 있으면 그 부분만 YOLO로 검출한다. ROI 다각형이 없으면 전체 화면을 쓴다.
+
+1. ROI를 감싸는 사각형만 잘라서 YOLO에 넣는다.
+2. 사각형 안에서도 ROI 밖 픽셀은 회색으로 가린다. 차량 지붕은 화면에서 도로 다각형 위로 올라가므로, 가릴 때 ROI를 위로 화면 높이의 15%만큼 넓혀 둔다(`up_frac`).
+3. 추적 결과 중 지면 접점이 ROI 밖(`foot_tolerance_px` 여유 밖)인 객체는 버린다.
+
+YOLO는 입력을 항상 `imgsz`로 맞추므로 `keep_scale`로 속도와 검출력 중 하나를 고른다. 84011 테스트 영상(ROI가 화면의 28%)에서 잰 값:
+
+| 방식 | YOLO 입력 | ROI 안 차량 검출(40프레임 합) | 검출 시간 |
+| --- | --- | --- | --- |
+| 전체 화면 (`enabled: false`) | 640 | 62 | 74 ms/프레임 |
+| ROI, `keep_scale: true` (같은 배율) | 256 | 55 | 31 ms/프레임 |
+| ROI, `keep_scale: false` (확대, 기본값) | 640 | 93 | 105 ms/프레임 |
+
+기본값은 먼 차량까지 잡는 확대 방식이다. 실시간이 더 중요하면 `keep_scale: true`로 바꾼다. 이 영상은 여러 화각이 섞여 있어 숫자는 대략적인 경향으로만 본다.
 
 ## 위반 판정 기준 (configs/default.yaml 에서 조정)
 
