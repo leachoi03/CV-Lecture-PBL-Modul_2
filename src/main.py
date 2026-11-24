@@ -6,23 +6,16 @@
 """
 import argparse
 import json
-import time
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 
 from .config import load_config
-from .detect_region import DetectRegion
-from .detector_tracker import DetectorTracker
 from .event_logger import EventLogger
 from .frame_source import FrameSource
-from .preprocess import apply_clahe
+from .pipeline import Pipeline
 from .roi import ROIConfig
-from .rules import JaywalkRule, LaneRule, StopLineRule
-from .signal_state import SignalProvider
-from .trajectory import TrajectoryStore
-from .visualize import AlertBoard, draw_hud, draw_roi, draw_tracks
 
 
 def parse_args():
@@ -63,92 +56,31 @@ def run(args) -> dict:
 
     # ---- 구성 요소 준비
     roi = ROIConfig.load(args.roi)
-    signal_provider = SignalProvider(roi.signal)
-    region = DetectRegion.from_roi(roi, width, height, cfg.get("detect_region"))
-    if region.active:
-        x0, y0, x1, y1 = region.rect
-        print(f"검출 영역: ROI 주변 {x1 - x0}x{y1 - y0} (원본의 {100 * region.area_ratio:.0f}%), "
-              f"ROI 밖 가리기 {'켬' if region.mask else '끔'}, YOLO 입력 {region.imgsz(cfg['imgsz'])}")
-    else:
-        print("검출 영역: 전체 화면 (ROI 다각형 없음 또는 detect_region.enabled=false)")
-    dt = DetectorTracker(
-        model=cfg["model"],
-        tracker=cfg["tracker"],
-        categories=cfg["categories"],
-        conf=cfg["conf"],
-        iou=cfg["iou"],
-        imgsz=cfg["imgsz"],
-        device=cfg.get("device"),
-    )
-    traj = TrajectoryStore(cfg["trajectory"]["maxlen"], cfg["trajectory"]["max_age"])
-    stop_rule = StopLineRule(roi.stop_lines, cfg["stopline"]["confirm_frames"])
-    jay_rule = JaywalkRule(
-        roi,
-        min_frames=int(round(cfg["jaywalk"]["min_seconds"] * fps)),
-        rider_overlap=cfg["jaywalk"]["rider_overlap"],
-    )
-    lane_cfg = cfg.get("lane", {})
-    lane_rule = LaneRule(
-        roi, fps,
-        applies_to=lane_cfg.get("applies_to", ["vehicle"]),
-        stable_seconds=lane_cfg.get("stable_seconds", 0.3),
-        multi_window_seconds=lane_cfg.get("multi_window_seconds", 3.0),
-        turn_degrees=lane_cfg.get("turn_degrees", 45),
-        heading_seconds=lane_cfg.get("heading_seconds", 0.7),
-        min_move_px=lane_cfg.get("min_move_px", 15),
-        turn_checks=lane_cfg.get("turn_checks", ["right"]),
-        max_age=cfg["trajectory"]["max_age"],
-    )
+    pipe = Pipeline(cfg, roi, fps, width, height)
+    print(pipe.describe_region())
     if roi.lanes:
         print(f"차로 {len(roi.lanes)}개: " + ", ".join(ln.id for ln in roi.lanes))
     logger = EventLogger(out_dir, cfg["output"]["save_snapshots"])
-    alerts = AlertBoard(ttl_frames=int(cfg["output"]["alert_ttl_seconds"] * fps))
     writer = None
     if cfg["output"]["save_video"]:
         writer = cv2.VideoWriter(str(out_dir / "result.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
 
     # ---- 프레임 루프
-    frame_idx, proc_time, fps_ema = 0, 0.0, 0.0
+    frame_idx, proc_time = 0, 0.0
     while True:
         ok, frame = cap.read()
         if not ok or (args.max_frames and frame_idx >= args.max_frames):
             break
-        t_sec = frame_idx / fps
-        t0 = time.perf_counter()
-
-        inp = apply_clahe(frame, cfg["preprocess"]["clahe_clip"]) if cfg["preprocess"]["clahe"] else frame
-        det_img, offset = region.prepare(inp)
-        tracks = region.filter(dt.update(det_img, offset, region.imgsz(cfg["imgsz"])))
-        traj.update(tracks, frame_idx)
-        signal = signal_provider.get(frame, t_sec)
-        events = (stop_rule.update(tracks, frame_idx, t_sec, signal) + jay_rule.update(tracks, frame_idx, t_sec)
-                  + lane_rule.update(tracks, frame_idx, t_sec))
-
-        dt_sec = time.perf_counter() - t0  # 검출·추적·판정 시간만 측정 (그리기·저장 제외)
-        proc_time += dt_sec
-        fps_ema = 0.9 * fps_ema + 0.1 * (1.0 / dt_sec) if fps_ema else 1.0 / dt_sec
-
-        # ---- 그리기 / 기록
-        vis = frame.copy()
-        draw_roi(vis, roi, signal)
-        region.draw(vis)
-        draw_tracks(vis, tracks, traj, stop_rule.violators | jay_rule.violators | lane_rule.violators,
-                    lane_of=lane_rule.current)
-        for e in events:
-            alerts.add(e)
-        alerts.draw(vis, frame_idx)
-        counts = dict(logger.counts)  # 이번 프레임 이벤트까지 포함한 누적 개수
-        for e in events:
-            counts[e.event_type] = counts.get(e.event_type, 0) + 1
-        draw_hud(vis, fps_ema, signal, counts)
-        for e in events:
-            logger.log(e, vis)
+        res = pipe.step(frame, frame_idx)  # 검출·추적·판정 시간만 proc_sec 로 잰다 (그리기·저장 제외)
+        proc_time += res.proc_sec
+        for e in res.events:
+            logger.log(e, res.vis)
             print(f"[{e.time_sec:7.2f}s] {e.event_type:9s} id={e.track_id} {e.cls_name} {e.detail}")
 
         if writer is not None:
-            writer.write(vis)
+            writer.write(res.vis)
         if args.show:
-            cv2.imshow("traffic-violation", vis)
+            cv2.imshow("traffic-violation", res.vis)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         frame_idx += 1
@@ -168,9 +100,9 @@ def run(args) -> dict:
         "sequence_warning": cap.warning,
         "processing_fps": frame_idx / proc_time if proc_time else 0.0,
         "avg_ms_per_frame": 1000 * proc_time / frame_idx if frame_idx else 0.0,
-        "unique_track_ids": len(traj.all_ids),
-        "detect_region": {"active": region.active, "rect": list(region.rect), "area_ratio": region.area_ratio,
-                          "mask": region.mask},
+        "unique_track_ids": len(pipe.traj.all_ids),
+        "detect_region": {"active": pipe.region.active, "rect": list(pipe.region.rect),
+                          "area_ratio": pipe.region.area_ratio, "mask": pipe.region.mask},
         "events": logger.counts,
         "config": cfg,
     }

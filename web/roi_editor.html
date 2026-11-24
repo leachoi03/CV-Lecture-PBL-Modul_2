@@ -55,6 +55,18 @@
   .help { color: var(--muted); font-size: 12px; margin: 0; padding-left: 16px; }
   .status { font-size: 12px; color: var(--muted); min-height: 18px; }
   .status.ok { color: var(--ok); } .status.err { color: var(--danger); }
+  .stage img.det { width: 100%; height: auto; display: block; }
+  .detect { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .detect h2 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; font-size: 12px; }
+  .chip b { color: var(--danger); }
+  table.events { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.events th, table.events td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  table.events th { color: var(--muted); font-weight: 600; }
+  table.events tbody tr { cursor: pointer; }
+  table.events tbody tr:hover { background: var(--bg); }
+  .events-wrap { max-height: 240px; overflow: auto; }
   kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px;
         font-size: 11px; background: var(--bg); }
 </style>
@@ -74,11 +86,28 @@
       <div class="empty" id="empty">영상을 선택하세요.<br>화면을 클릭해 점을 찍으면 점들이 이어져 다각형이 됩니다.</div>
       <video id="video" muted playsinline preload="auto" hidden></video>
       <canvas id="canvas" hidden></canvas>
+      <img id="detImg" class="det" alt="YOLO 검출 결과" hidden>
     </div>
     <div class="controls">
       <button id="playBtn" type="button" disabled>▶ 재생</button>
       <input id="seek" type="range" min="0" max="0" step="0.04" value="0" disabled>
       <span id="timeLabel" class="status">0.0 / 0.0초</span>
+    </div>
+
+    <div class="detect">
+      <h2>YOLO 검출 결과</h2>
+      <div class="row">
+        <button id="detBtn" type="button" class="primary" disabled>▶ 검출 보기 (현재 장면부터)</button>
+        <label><input id="detRealtime" type="checkbox" checked> 영상 속도로 재생</label>
+      </div>
+      <p class="status" id="detStatus">서버 영상을 열면 지금 그린 도로·차로로 검출해 볼 수 있습니다. (저장하지 않아도 됩니다)</p>
+      <div class="chips" id="detChips"></div>
+      <div class="events-wrap" id="detEventsWrap" hidden>
+        <table class="events">
+          <thead><tr><th>시각</th><th>위반</th><th>ID</th><th>내용</th></tr></thead>
+          <tbody id="detEvents"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -308,6 +337,8 @@
     $("closeBtn").disabled = !(state.cur && state.cur.length >= 3);
     $("undoBtn").disabled = !(state.cur && state.cur.length);
     $("delBtn").disabled = state.sel < 0;
+    $("detBtn").disabled = !(has && state.source.kind === "server") && !detect.run;
+    $("detBtn").title = has && state.source.kind !== "server" ? "검출은 서버 영상(data/videos)만 됩니다" : "";
     $("newBtn").textContent = state.cur ? "그리는 중… (Esc 취소)" : (state.mode === "road" ? "새 도로 다각형" : "새 차로");
     $("modeRoad").classList.toggle("on", state.mode === "road");
     $("modeLane").classList.toggle("on", state.mode === "lane");
@@ -452,6 +483,83 @@
   });
   video.addEventListener("error", () => setStatus("영상을 재생할 수 없습니다. 브라우저가 지원하는 코덱(H.264 mp4 등)인지 확인하세요.", "err"));
 
+  // ------------------------------------------------------------ YOLO 검출 보기
+  const EVENT_KO = {stopline: "정지선 위반", jaywalk: "무단횡단", multi_lane: "2차로 이상 변경",
+    left_turn_lane_change: "좌회전 중 차로 변경", intersection_lane_change: "교차로 안 차로 변경",
+    right_turn_lane: "우회전 차로 위반", left_turn_lane: "좌회전 차로 위반"};
+  const STATE_KO = {ready: "준비", loading: "YOLO 모델 불러오는 중…", running: "검출 중", done: "끝까지 처리함",
+    stopped: "멈춤", error: "오류"};
+  const detect = {run: null, timer: null};
+  function detSet(msg, kind = "") { const el = $("detStatus"); el.textContent = msg; el.className = "status " + kind; }
+  function showDetect(on) {
+    $("detImg").hidden = !on; video.hidden = on; canvas.hidden = on;
+    $("detBtn").textContent = on ? "■ 검출 멈추기" : "▶ 검출 보기 (현재 장면부터)";
+    $("detBtn").classList.toggle("danger", on); $("detBtn").classList.toggle("primary", !on);
+  }
+  async function startDetect() {
+    if (!beforeSave()) return;
+    video.pause();
+    detSet("시작하는 중…");
+    try {
+      const r = await fetch("/api/detect/start", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({video: state.source.name, roi: roiJson(), start: video.currentTime || 0,
+                              realtime: $("detRealtime").checked})});
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error || r.status);
+      detect.run = res.run;
+      $("detEvents").innerHTML = ""; $("detChips").innerHTML = ""; $("detEventsWrap").hidden = true;
+      $("detImg").src = "/api/detect/stream/" + res.run;
+      showDetect(true);
+      detect.timer = setInterval(pollDetect, 500);
+    } catch (e) { detSet("검출 시작 실패: " + e.message, "err"); }
+    refreshUI();
+  }
+  function endDetect() {
+    clearInterval(detect.timer); detect.timer = null;
+    $("detImg").removeAttribute("src");   // 연결을 끊으면 서버도 멈춘다
+    showDetect(false); detect.run = null; refreshUI();
+  }
+  async function stopDetect() {
+    const run = detect.run;
+    if (run) { try { await fetch("/api/detect/stop/" + run, {method: "POST"}); } catch {} }
+    await pollDetect(run);
+    detSet($("detStatus").textContent.replace(/^[^·]+·/, "멈춤 ·"));   // 서버는 지금 프레임을 마치고 멈춘다
+    endDetect();
+  }
+  async function pollDetect(run = detect.run) {
+    if (!run) return;
+    let st;
+    try { const r = await fetch("/api/detect/status/" + run); if (!r.ok) return; st = await r.json(); }
+    catch { return; }
+    const t = `${st.t.toFixed(1)} / ${st.duration.toFixed(1)}초`;
+    const msg = st.state === "error" ? `오류: ${st.error}` :
+      `${STATE_KO[st.state] || st.state} · ${t} · 처리 ${st.proc_fps.toFixed(1)} FPS` + (st.region ? ` · ${st.region}` : "");
+    detSet(msg, st.state === "error" ? "err" : (st.state === "done" ? "ok" : ""));
+    $("detChips").innerHTML = "";
+    Object.entries(st.counts).forEach(([k, n]) => {
+      const c = document.createElement("span"); c.className = "chip";
+      c.innerHTML = `${EVENT_KO[k] || k} <b></b>`; c.querySelector("b").textContent = n; $("detChips").appendChild(c);
+    });
+    const tb = $("detEvents");
+    st.events.slice(tb.children.length).forEach(e => {
+      const tr = document.createElement("tr");
+      [`${e.t.toFixed(1)}초`, EVENT_KO[e.type] || e.type, `${e.id} ${e.cls}`, e.detail].forEach(v => {
+        const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+      tr.title = "클릭하면 편집 화면이 이 시각으로 이동합니다";
+      tr.onclick = () => { if (detect.run) endDetect(); video.currentTime = e.t; };
+      tb.appendChild(tr);
+    });
+    $("detEventsWrap").hidden = !st.events.length;
+    if (["done", "stopped", "error"].includes(st.state) && run === detect.run) {
+      clearInterval(detect.timer); detect.timer = null;   // 마지막 화면은 남겨 둔다
+      $("detBtn").textContent = "← 편집 화면으로";
+    }
+  }
+  $("detBtn").onclick = () => {
+    if (!detect.run) return startDetect();
+    detect.timer ? stopDetect() : endDetect();
+  };
+
   function confirmDiscard() { return !state.dirty || confirm("저장하지 않은 ROI가 있습니다. 버리고 다른 영상을 열까요?"); }
   function resetRoi() { state.shapes = []; state.cur = null; state.sel = -1; state.extra = {}; state.dirty = false; }
   const okPoly = P => Array.isArray(P) && P.length >= 3;
@@ -470,6 +578,7 @@
 
   async function openServerVideo(name) {
     if (!name || !confirmDiscard()) return;
+    if (detect.run) await stopDetect();
     resetRoi();
     const stem = name.replace(/\.[^.]+$/, "");
     state.source = {kind: "server", name, stem};
@@ -486,6 +595,7 @@
   $("fileBtn").onclick = () => $("fileInput").click();
   $("fileInput").onchange = e => {
     const f = e.target.files[0]; if (!f || !confirmDiscard()) return;
+    if (detect.run) stopDetect();
     resetRoi();
     state.source = {kind: "local", name: f.name, stem: f.name.replace(/\.[^.]+$/, "")};
     $("videoSelect").value = "";
