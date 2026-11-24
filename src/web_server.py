@@ -8,6 +8,10 @@
 - GET  /video/<이름>     영상 스트리밍 (Range 요청 지원 → 브라우저에서 앞뒤로 이동 가능)
 - GET  /api/roi/<이름>   configs/roi/<이름>.json 읽기
 - POST /api/roi/<이름>   같은 파일에 저장 (기존 정지선·신호 등 다른 항목은 유지하고 road·lanes 를 바꾼다)
+- POST /api/detect/start          {video, roi, start} → YOLO 검출 실행 하나 만들기 (src.web_detect)
+- GET  /api/detect/stream/<실행>  결과 화면 MJPEG
+- GET  /api/detect/status/<실행>  진행 상황·위반 목록
+- POST /api/detect/stop/<실행>    멈추기
 내 PC에만 열리도록 127.0.0.1 에서만 듣는다.
 """
 import argparse
@@ -17,7 +21,10 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import unquote, urlparse
+
+from .web_detect import BOUNDARY, DetectManager
 
 ROOT = Path(__file__).resolve().parent.parent
 VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".ogg", ".mkv", ".avi"}
@@ -99,12 +106,12 @@ def parse_range(header: str, size: int):
     return (start, end) if start <= end and start < size else None
 
 
-def make_handler(video_dir: Path, roi_dir: Path, web_dir: Path):
+def make_handler(video_dir: Path, roi_dir: Path, web_dir: Path, detector: Optional[DetectManager] = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ROIEditor/1.0"
 
-        def log_message(self, fmt, *args):  # 영상 조각 요청마다 찍히는 로그는 생략
-            if not self.path.startswith("/video/"):
+        def log_message(self, fmt, *args):  # 영상 조각·검출 상태 요청마다 찍히는 로그는 생략
+            if not self.path.startswith(("/video/", "/api/detect/status/")):
                 super().log_message(fmt, *args)
 
         # ------------------------------------------------ 응답 도우미
@@ -127,9 +134,30 @@ def make_handler(video_dir: Path, roi_dir: Path, web_dir: Path):
             p = (base / name).resolve()
             return p if p.parent == base.resolve() else None
 
+        def read_json(self):
+            """요청 본문 JSON. 문제가 있으면 오류 응답을 보내고 None."""
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 5 * CHUNK:
+                self.error_json(HTTPStatus.BAD_REQUEST, "내용이 없거나 너무 큽니다")
+                return None
+            try:
+                return json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.error_json(HTTPStatus.BAD_REQUEST, "JSON 형식이 아닙니다")
+                return None
+
+        def load_roi_file(self, stem: str) -> dict:
+            p = self.safe_child(roi_dir, stem + ".json")
+            if p is None or not p.is_file():
+                return {}
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+
         # ------------------------------------------------ 라우팅
         def do_GET(self):
             path = unquote(urlparse(self.path).path)
+            if path.startswith("/api/detect/"):
+                return self.detect_get(path[len("/api/detect/"):])
             if path in ("/", "/index.html"):
                 return self.send_file(web_dir / "roi_editor.html", "text/html; charset=utf-8")
             if path == "/api/videos":
@@ -154,18 +182,16 @@ def make_handler(video_dir: Path, roi_dir: Path, web_dir: Path):
 
         def do_POST(self):
             path = unquote(urlparse(self.path).path)
+            if path.startswith("/api/detect/"):
+                return self.detect_post(path[len("/api/detect/"):])
             if not path.startswith("/api/roi/"):
                 return self.error_json(HTTPStatus.NOT_FOUND, "없는 주소")
             p = self.safe_child(roi_dir, path[len("/api/roi/"):] + ".json")
             if p is None:
                 return self.error_json(HTTPStatus.BAD_REQUEST, "잘못된 이름")
-            length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > 5 * CHUNK:
-                return self.error_json(HTTPStatus.BAD_REQUEST, "내용이 없거나 너무 큽니다")
-            try:
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                return self.error_json(HTTPStatus.BAD_REQUEST, "JSON 형식이 아닙니다")
+            data = self.read_json()
+            if data is None:
+                return
             err = valid_roi(data)
             if err:
                 return self.error_json(HTTPStatus.BAD_REQUEST, err)
@@ -179,6 +205,64 @@ def make_handler(video_dir: Path, roi_dir: Path, web_dir: Path):
             rel = p.relative_to(ROOT) if p.is_relative_to(ROOT) else p
             print(f"ROI 저장: {rel} (도로 다각형 {len(data.get('road', []))}개, 차로 {len(data.get('lanes', []))}개)")
             self.send_json({"ok": True, "path": str(rel).replace("\\", "/")})
+
+        # ------------------------------------------------ YOLO 검출
+        def detect_post(self, sub: str):
+            if detector is None:
+                return self.error_json(HTTPStatus.SERVICE_UNAVAILABLE, "검출 기능이 꺼져 있습니다")
+            if sub == "start":
+                body = self.read_json()
+                if body is None:
+                    return
+                if not isinstance(body, dict):
+                    return self.error_json(HTTPStatus.BAD_REQUEST, "JSON 객체가 아닙니다")
+                video = self.safe_child(video_dir, str(body.get("video", "")))
+                if video is None or not video.is_file():
+                    return self.error_json(HTTPStatus.NOT_FOUND, "영상을 찾을 수 없습니다 (서버 영상만 검출할 수 있습니다)")
+                roi = body.get("roi") or {}
+                err = valid_roi(roi)
+                if err:
+                    return self.error_json(HTTPStatus.BAD_REQUEST, err)
+                start = body.get("start", 0)
+                if not isinstance(start, (int, float)) or isinstance(start, bool):
+                    return self.error_json(HTTPStatus.BAD_REQUEST, "start 는 초 단위 숫자여야 합니다")
+                # 저장된 파일의 정지선·횡단보도·신호 등은 살리고 편집 중인 도로·차로로 덮어쓴다
+                merged = merge_roi(self.load_roi_file(video.stem), roi)
+                run = detector.start(video, merged, float(start), bool(body.get("realtime", True)))
+                print(f"검출 시작: {video.name} {float(start):.1f}초부터 (실행 {run.id})")
+                return self.send_json({"run": run.id})
+            if sub.startswith("stop/"):
+                run = detector.get(sub[len("stop/"):])
+                if run is None:
+                    return self.error_json(HTTPStatus.NOT_FOUND, "없는 실행")
+                run.stop()
+                return self.send_json({"ok": True})
+            self.error_json(HTTPStatus.NOT_FOUND, "없는 주소")
+
+        def detect_get(self, sub: str):
+            if detector is None:
+                return self.error_json(HTTPStatus.SERVICE_UNAVAILABLE, "검출 기능이 꺼져 있습니다")
+            kind, _, run_id = sub.partition("/")
+            if kind not in ("status", "stream"):
+                return self.error_json(HTTPStatus.NOT_FOUND, "없는 주소")
+            run = detector.get(run_id)
+            if run is None:
+                return self.error_json(HTTPStatus.NOT_FOUND, "없는 실행")
+            if kind == "status":
+                return self.send_json(run.status())
+            if run.streamed:
+                return self.error_json(HTTPStatus.CONFLICT, "이미 보고 있는 실행입니다")
+            run.streamed = True
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY}")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                for jpg in run.frames():
+                    head = f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpg)}\r\n\r\n"
+                    self.wfile.write(head.encode("ascii") + jpg + b"\r\n")
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                run.stop()  # 브라우저가 화면을 닫으면 멈춘다
 
         # ------------------------------------------------ 파일 전송 (Range 지원)
         def send_file(self, p: Path, ctype: str, allow_range: bool = False):
@@ -226,10 +310,14 @@ def main():
     ap.add_argument("--videos", default="data/videos", help="영상 폴더")
     ap.add_argument("--roi-dir", default="configs/roi", help="ROI JSON 저장 폴더")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--config", default="configs/default.yaml", help="YOLO 검출 설정")
+    ap.add_argument("--no-detect", action="store_true", help="YOLO 검출 기능 끄기 (편집만)")
     args = ap.parse_args()
 
-    video_dir, roi_dir = Path(args.videos).resolve(), Path(args.roi_dir).resolve()
-    handler = make_handler(video_dir, roi_dir, ROOT / "web")
+    # 상대 경로는 실행 위치가 아니라 프로젝트 폴더 기준으로 푼다
+    video_dir, roi_dir = (ROOT / args.videos).resolve(), (ROOT / args.roi_dir).resolve()
+    detector = None if args.no_detect else DetectManager((ROOT / args.config).resolve())
+    handler = make_handler(video_dir, roi_dir, ROOT / "web", detector)
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
     n = len([p for p in video_dir.glob("*") if p.suffix.lower() in VIDEO_EXTS]) if video_dir.is_dir() else 0
     print(f"영상 폴더: {video_dir} ({n}개)\nROI 저장 폴더: {roi_dir}")
